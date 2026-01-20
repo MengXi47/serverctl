@@ -14,7 +14,7 @@ IDRAC_PASS = "calvin"
 
 
 class DellServer:
-    def __init__(self, ip, user, password):
+    def __init__(self, ip, user, password, net_timeout=8, retries=3):
         self.ip = ip
         self.user = user
         self.password = password
@@ -28,6 +28,10 @@ class DellServer:
             self.user,
             "-P",
             self.password,
+            "-N",
+            str(net_timeout),
+            "-R",
+            str(retries),
         ]
 
     def run(self, args, capture=True):
@@ -42,6 +46,29 @@ class DellServer:
             return result.stdout.strip() if capture else True
         except:
             return None
+
+    def _parse_sdr_lines(self, sdr_raw, data):
+        for line in sdr_raw.split("\n"):
+            if not line or "|" not in line:
+                continue
+            low_line = line.lower()
+            parts = [part.strip() for part in line.split("|")]
+            sensor_name = parts[0]
+            sensor_value = parts[-1]
+
+            if "inlet temp" in low_line:
+                data["inlet_temp"] = sensor_value
+                continue
+
+            if "temp" in low_line and "degrees c" in low_line:
+                if "inlet" not in low_line:
+                    data["cpu_temp"].append(
+                        f"{sensor_name}: {sensor_value}"
+                    )
+                continue
+
+            if "fan" in low_line and "rpm" in low_line:
+                data["fans"].append(f"{sensor_name}: {sensor_value}")
 
     def get_sensors(self):
         data = {
@@ -63,23 +90,14 @@ class DellServer:
         # 2. 溫度與風扇抓取 (elist full)
         sdr_raw = self.run(["sdr", "elist", "full"])
         if sdr_raw:
-            for line in sdr_raw.split("\n"):
-                if not line or "|" not in line:
-                    continue
-                low_line = line.lower()
-                parts = line.split("|")
-                sensor_name = parts[0].strip()
-                sensor_value = parts[-1].strip()
-
-                if "inlet temp" in low_line:
-                    data["inlet_temp"] = sensor_value
-                elif "temp" in low_line and "degrees c" in low_line:
-                    if "inlet" not in low_line:
-                        data["cpu_temp"].append(
-                            f"{sensor_name}: {sensor_value}"
-                        )
-                elif "fan" in low_line and "rpm" in low_line:
-                    data["fans"].append(f"{sensor_name}: {sensor_value}")
+            self._parse_sdr_lines(sdr_raw, data)
+        else:
+            temp_raw = self.run(["sdr", "type", "temperature"])
+            if temp_raw:
+                self._parse_sdr_lines(temp_raw, data)
+            fan_raw = self.run(["sdr", "type", "fan"])
+            if fan_raw:
+                self._parse_sdr_lines(fan_raw, data)
 
         return data
 
